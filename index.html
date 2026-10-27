@@ -68,9 +68,19 @@
 
   .app {
     position: relative;
-    z-index: 1;
+    z-index: 2;
     width: min(100%, var(--app-max, 660px));
     min-width: 0;
+  }
+
+  .matrix-rain {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 0.52;
   }
 
   /* ---------- CRT overlay ---------- */
@@ -444,7 +454,7 @@
       0 0 24px rgba(93, 255, 165, 0.14),
       inset 0 0 22px rgba(93, 255, 165, 0.08);
     font-family: var(--mono);
-    font-size: 1.62rem;
+    font-size: 1.82rem;
     line-height: 1;
     cursor: pointer;
     text-shadow: 0 0 8px rgba(93, 255, 165, 0.9);
@@ -1009,6 +1019,7 @@
 </style>
 </head>
 <body>
+<canvas class="matrix-rain" id="matrixRain" aria-hidden="true"></canvas>
 <div class="crt" aria-hidden="true"></div>
 
 <main class="app">
@@ -1667,6 +1678,7 @@
     const rings = [];
     const fills = ["#0b2b1c", "#0d3523", "#082116", "#113c28", "#061b11"];
     const glyphChars = "01<>#$%&*+=/\\[]{}";
+    const monoFont = getComputedStyle(document.body).fontFamily;
 
     const hitRow = Math.floor(hitIndex / cfg.cols);
     const hitCol = hitIndex % cfg.cols;
@@ -1861,7 +1873,7 @@
         ctx.translate(g.x, g.y);
         ctx.rotate(g.rot);
         ctx.fillStyle = g.color;
-        ctx.font = `700 ${g.size}px ${getComputedStyle(document.body).fontFamily}`;
+        ctx.font = `700 ${g.size}px ${monoFont}`;
         ctx.fillText(g.char, 0, 0);
         ctx.restore();
       }
@@ -1930,6 +1942,149 @@
     }
 
     fxRaf = requestAnimationFrame(frame);
+  }
+
+  // ---------- matrix rain ----------
+
+  function initMatrixRain() {
+    const rainCanvas = document.getElementById("matrixRain");
+    const ctx = rainCanvas.getContext("2d");
+    if (!ctx) return;
+
+    const KATAKANA = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン";
+    const SCRIPT = "0123456789=+*<>[]{}";
+    const GLYPHS = KATAKANA + KATAKANA + SCRIPT;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let columns = [];
+    let width = 0;
+    let height = 0;
+    let fontSize = 16;
+    let columnGap = 18;
+    let dpr = 1;
+    let lastFrame = 0;
+    let rainResizeTimer = 0;
+
+    function randomGlyph() {
+      return GLYPHS[Math.floor(Math.random() * GLYPHS.length)];
+    }
+
+    function setFont() {
+      ctx.font = `500 ${fontSize}px "Noto Sans CJK JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+    }
+
+    function drawGlyph(x, y, alpha, isHead) {
+      if (y < -fontSize * 2 || y > height + fontSize * 2) return;
+
+      const roll = Math.random();
+      let color;
+
+      if (roll < 0.955) color = isHead ? "#d9ffe8" : "#71ffb2";
+      else if (roll < 0.985) color = "#5de8ff";
+      else color = "#ff4f87";
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = isHead ? 9 : 4;
+      ctx.fillText(randomGlyph(), x, y);
+      ctx.restore();
+    }
+
+    function seedTrail(column) {
+      const length = 6 + Math.floor(Math.random() * 15);
+
+      for (let k = 0; k < length; k++) {
+        const y = (column.row - k) * fontSize + fontSize / 2;
+        const alpha = Math.pow(1 - k / length, 1.55) * (k === 0 ? 0.95 : 0.72);
+        if (alpha > 0.02) drawGlyph(column.x, y, alpha, k === 0);
+      }
+    }
+
+    function resetColumn(column, seed) {
+      column.row = seed
+        ? Math.random() * (height / fontSize + 8) - 7
+        : -Math.random() * 13 - 2;
+      column.speed = 2.4 + Math.random() * 8.6;
+
+      if (seed) seedTrail(column);
+    }
+
+    function makeColumn(index) {
+      const column = {
+        x: index * columnGap + columnGap / 2,
+        row: 0,
+        speed: 0,
+      };
+      resetColumn(column, true);
+      return column;
+    }
+
+    function setup() {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+
+      rainCanvas.width = Math.floor(width * dpr);
+      rainCanvas.height = Math.floor(height * dpr);
+      rainCanvas.style.width = width + "px";
+      rainCanvas.style.height = height + "px";
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      fontSize = width < 660 ? 14 : 16;
+      columnGap = Math.ceil(fontSize * 1.09);
+      setFont();
+
+      const count = Math.ceil(width / columnGap) + 1;
+      columns = Array.from({ length: count }, (_, index) => makeColumn(index));
+      lastFrame = 0;
+    }
+
+    function frame(now) {
+      requestAnimationFrame(frame);
+
+      if (!lastFrame) lastFrame = now;
+      if (now - lastFrame < 1000 / 30) return;
+
+      const dt = Math.min((now - lastFrame) / 1000, 0.08);
+      lastFrame = now;
+
+      // Fading with destination-out keeps the canvas transparent while
+      // leaving long phosphor trails behind every falling column.
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = "rgba(0, 0, 0, 0.055)";
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalCompositeOperation = "source-over";
+
+      for (const column of columns) {
+        const previousRow = Math.floor(column.row);
+        column.row += column.speed * dt;
+        const currentRow = Math.floor(column.row);
+
+        if (currentRow > previousRow) {
+          for (let row = previousRow + 1; row <= currentRow; row++) {
+            drawGlyph(column.x, row * fontSize + fontSize / 2, 0.94, true);
+          }
+        }
+
+        if (column.row * fontSize > height + fontSize * 3) {
+          resetColumn(column, false);
+        }
+      }
+    }
+
+    setup();
+    if (!reduceMotion) requestAnimationFrame(frame);
+
+    window.addEventListener("resize", () => {
+      clearTimeout(rainResizeTimer);
+      rainResizeTimer = setTimeout(setup, 140);
+    });
   }
 
   // ---------- input ----------
@@ -2047,6 +2202,7 @@
 
   // ---------- start ----------
 
+  initMatrixRain();
   newGame();
 })();
 </script>
